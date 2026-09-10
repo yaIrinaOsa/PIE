@@ -164,7 +164,7 @@
     .check-box .label { font-size: 11px; color: var(--muted); }
     .check-box .value { margin-top: 2px; font-size: 19px; font-weight: 720; line-height: 1.1; overflow-wrap: anywhere; }
 
-    .basis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+    .basis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
     .basis label { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px; font-size: 12px; }
 
     .breakdown { border: 1px solid var(--border); border-radius: 9px; padding: 9px; background: var(--surface-2); }
@@ -398,7 +398,6 @@
           <div class="basis">
             <label><input type="radio" name="basis" value="exact" /> расчётный</label>
             <label><input type="radio" name="basis" value="rounded" checked /> рекомендуемый</label>
-            <label><input id="customBasis" type="radio" name="basis" value="custom" disabled /> мой чек</label>
           </div>
 
           <div class="breakdown">
@@ -417,6 +416,7 @@
               <input class="input" id="customCheck" type="number" inputmode="numeric" min="0" placeholder="Например, 350000" />
             </label>
             <div class="custom-result" id="customResult">Введите сумму — покажу фактическую маржу.</div>
+            <div class="custom-result" id="customBasisNote" style="display:none; margin-top:6px;"><strong>Раскладка выше рассчитана по вашему чеку.</strong></div>
           </div>
 
           <button class="btn primary" id="saveBtn" type="button">Сохранить проект</button>
@@ -653,17 +653,15 @@
         $('roundedCheck').textContent = valid ? money(rounded) : '—';
 
         const custom = positive($('customCheck').value);
-        const customBasis = $('customBasis');
-        customBasis.disabled = custom <= 0;
-
+        const useCustom = custom > 0;
         let basis = root.querySelector('input[name="basis"]:checked')?.value || 'rounded';
-        if (basis === 'custom' && custom <= 0) {
-          root.querySelector('input[name="basis"][value="rounded"]').checked = true;
-          basis = 'rounded';
-        }
+
+        // Как только пользователь вводит свой чек, вся раскладка считается по нему.
+        // Переключатели «расчётный / рекомендуемый» снова начинают действовать после очистки поля.
+        root.querySelectorAll('input[name="basis"]').forEach((radio) => { radio.disabled = useCustom; });
 
         const check = valid
-          ? (basis === 'exact' ? exact : basis === 'custom' ? custom : rounded)
+          ? (useCustom ? custom : (basis === 'exact' ? exact : rounded))
           : 0;
         const items = rawItems(check);
         const totalExpense = items.reduce((sum, i) => sum + i.amount, 0);
@@ -689,12 +687,14 @@
           const customMargin = custom - customExpense;
           const customMarginPct = customMargin / custom * 100;
           const diff = exact - custom;
-          const basisNote = basis === 'custom' ? ' · раскладка выше по этому чеку' : '';
-          $('customResult').innerHTML = `Маржа <strong>${money(customMargin)}</strong> / <strong>${customMarginPct.toFixed(1).replace('.', ',')}%</strong>${diff > 0 ? ` · до цели не хватает <strong>${money(diff)}</strong>` : ` · запас <strong>${money(Math.abs(diff))}</strong>`}${basisNote}`;
+          $('customResult').innerHTML = `Маржа <strong>${money(customMargin)}</strong> / <strong>${customMarginPct.toFixed(1).replace('.', ',')}%</strong>${diff > 0 ? ` · до цели не хватает <strong>${money(diff)}</strong>` : ` · запас <strong>${money(Math.abs(diff))}</strong>`}`;
+          $('customBasisNote').style.display = 'block';
         } else if (custom > 0 && !valid) {
           $('customResult').textContent = 'Сначала исправь проценты: текущая формула невозможна.';
+          $('customBasisNote').style.display = 'none';
         } else {
           $('customResult').textContent = 'Введите сумму — покажу фактическую маржу.';
+          $('customBasisNote').style.display = 'none';
         }
 
         highlightZeros();
@@ -794,7 +794,8 @@
         state.executors = clone(d.executors || [newExecutor()]);
         state.extras = clone(d.extras || []);
         state.currentId = project.id;
-        root.querySelector(`input[name="basis"][value="${d.basis || 'rounded'}"]`).checked = true;
+        const savedBasis = d.basis === 'exact' ? 'exact' : 'rounded';
+        root.querySelector(`input[name="basis"][value="${savedBasis}"]`).checked = true;
         $('client').classList.remove('error');
         $('projectName').classList.remove('error');
         renderExecutors(); renderExtras(); setDirty(false); calculate();
@@ -888,15 +889,7 @@
         const el = $(id);
         el.addEventListener('input', () => {
           if (id === 'client' || id === 'projectName') el.classList.remove('error');
-          if (id === 'customCheck') {
-            const hasCustomCheck = positive(el.value) > 0;
-            $('customBasis').disabled = !hasCustomCheck;
-            if (hasCustomCheck) {
-              $('customBasis').checked = true;
-            } else if ($('customBasis').checked) {
-              root.querySelector('input[name="basis"][value="rounded"]').checked = true;
-            }
-          }
+          // При вводе своего чека calculate() автоматически переводит всю раскладку на эту сумму.
           setDirty(); calculate();
         });
         el.addEventListener('change', () => {
