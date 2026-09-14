@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark" />
   <title>PIE — калькулятор проектов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <style>
     :root {
       --bg: var(--tg-theme-bg-color, #f4f5f7);
@@ -291,6 +292,33 @@
       .readonly-grid { grid-template-columns: 1fr; }
       .result-actions { grid-template-columns: 1fr; }
     }
+  
+    .capture-sheet {
+      position: fixed;
+      left: -10000px;
+      top: 0;
+      width: 760px;
+      padding: 28px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      z-index: -1;
+    }
+    .capture-sheet h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+    .capture-sheet .capture-comment { margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.45; }
+    .capture-sheet .capture-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 22px 0; }
+    .capture-sheet .capture-stat { padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+    .capture-sheet .capture-stat span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .capture-sheet .capture-stat strong { font-size: 19px; line-height: 1.15; }
+    .capture-sheet .capture-rows { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+    .capture-sheet .capture-row { display: flex; justify-content: space-between; gap: 18px; padding: 6px 0; font-size: 15px; }
+    .capture-sheet .capture-row .capture-pct { color: var(--muted); }
+    .capture-sheet .capture-totals { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+    .capture-sheet .capture-total { display: flex; justify-content: space-between; gap: 18px; padding: 6px 0; font-size: 16px; }
+    .capture-sheet .capture-total strong { font-size: 17px; }
+    .capture-sheet .capture-foot { margin-top: 16px; color: var(--muted); font-size: 11px; text-align: right; }
   </style>
 </head>
 <body>
@@ -459,7 +487,7 @@
 
           <div class="result-actions">
             <button class="btn primary" id="saveBtn" type="button">Сохранить проект</button>
-            <button class="btn" id="downloadCurrentBtn" type="button">Скачать расчёт</button>
+            <button class="btn" id="downloadCurrentBtn" type="button">Скачать скриншот</button>
           </div>
         </section>
       </aside>
@@ -849,24 +877,69 @@
         return String(text || 'PIE-расчёт').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'PIE-расчёт';
       }
 
-      function projectDownloadHtml(data) {
+      function screenshotMarkup(data) {
         const c = savedProjectCalc(data);
-        const rows = c.items.map((i) => `<tr><td>${esc(i.name)}${i.type === 'pct' ? ` (${i.value}%)` : ''}</td><td>${money(i.amount)}</td></tr>`).join('');
-        return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${esc(data.client)} — ${esc(data.project)}</title><style>body{font-family:Arial,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;color:#181818}h1{font-size:24px;margin-bottom:4px}.muted{color:#666}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:24px 0}.stat{border:1px solid #ddd;border-radius:10px;padding:12px}.stat small{display:block;color:#666;margin-bottom:4px}.stat b{font-size:18px}table{width:100%;border-collapse:collapse;margin-top:18px}td{padding:8px 0;border-bottom:1px solid #eee}td:last-child{text-align:right;font-weight:600}.totals{margin-top:20px;border-top:2px solid #222;padding-top:12px}.row{display:flex;justify-content:space-between;margin:7px 0}@media print{body{margin:0;max-width:none}}</style></head><body><h1>${esc(data.client)} — ${esc(data.project)}</h1>${data.comment ? `<p class="muted">${esc(data.comment)}</p>` : ''}<div class="stats"><div class="stat"><small>Целевая маржа</small><b>${c.target}%</b></div><div class="stat"><small>Чек</small><b>${money(c.check)}</b></div><div class="stat"><small>Маржинальность</small><b>${c.marginPct.toFixed(1).replace('.', ',')}%</b></div></div><table>${rows}</table><div class="totals"><div class="row"><span>Итого расход</span><b>${money(c.totalExpense)}</b></div><div class="row"><span>Маржа</span><b>${money(c.margin)}</b></div><div class="row"><span>Доля партнёра</span><b>${money(c.partnerShare)}</b></div></div></body></html>`;
+        if (!c.valid) return null;
+        const checkLabel = c.custom > 0 ? 'Свой чек' : (data.basis === 'exact' ? 'Расчётный чек' : 'Рекомендуемый чек');
+        const rows = c.items.length ? c.items.map((i) => `
+          <div class="capture-row">
+            <span>${esc(i.name)}${i.type === 'pct' ? ` <span class="capture-pct">${i.value}%</span>` : ''}</span>
+            <strong>${money(i.amount)}</strong>
+          </div>`).join('') : '<div class="capture-row"><span>Нет активных расходов</span><strong>0 ₽</strong></div>';
+        return `<div class="capture-sheet" aria-hidden="true">
+          <h1>${esc(data.client || 'PIE')} — ${esc(data.project || 'Расчёт')}</h1>
+          ${data.comment ? `<p class="capture-comment">${esc(data.comment)}</p>` : ''}
+          <div class="capture-stats">
+            <div class="capture-stat"><span>Целевая маржа</span><strong>${c.target}%</strong></div>
+            <div class="capture-stat"><span>${checkLabel}</span><strong>${money(c.check)}</strong></div>
+            <div class="capture-stat"><span>Маржинальность</span><strong>${c.marginPct.toFixed(1).replace('.', ',')}%</strong></div>
+          </div>
+          <div class="capture-rows">
+            ${rows}
+            <div class="capture-totals">
+              <div class="capture-total"><span>Итого расход</span><strong>${money(c.totalExpense)}</strong></div>
+              <div class="capture-total"><span>Маржа</span><strong>${money(c.margin)}</strong></div>
+              <div class="capture-total"><span>Доля партнёра</span><strong>${money(c.partnerShare)}</strong></div>
+            </div>
+          </div>
+          <div class="capture-foot">PIE · калькулятор проектов</div>
+        </div>`;
       }
 
-      function downloadData(data) {
-        const html = projectDownloadHtml(data);
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = safeFileName(`${data.client || 'PIE'} — ${data.project || 'расчёт'}`) + '.html';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        toast('Расчёт скачан');
+      async function downloadData(data) {
+        const markup = screenshotMarkup(data);
+        if (!markup) { toast('Исправь проценты'); return; }
+        if (typeof window.html2canvas !== 'function') { toast('Не удалось загрузить модуль скриншота'); return; }
+
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = markup;
+        const sheet = wrapper.firstElementChild;
+        document.body.appendChild(sheet);
+
+        try {
+          const canvas = await window.html2canvas(sheet, {
+            backgroundColor: getComputedStyle(sheet).backgroundColor,
+            scale: Math.min(2, window.devicePixelRatio || 1.5),
+            useCORS: true,
+            logging: false
+          });
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png', 1));
+          if (!blob) throw new Error('PNG creation failed');
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = safeFileName(`${data.client || 'PIE'} — ${data.project || 'расчёт'}`) + '.png';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1500);
+          toast('Скриншот скачан');
+        } catch (err) {
+          console.error(err);
+          toast('Не удалось сохранить скриншот');
+        } finally {
+          sheet.remove();
+        }
       }
 
       function downloadProject(id) {
@@ -1041,7 +1114,7 @@
               ${readonlyDetailsHtml(p)}
               <div class="project-card-actions">
                 <button class="btn compact" data-edit="${p.id}" type="button">Редактировать</button>
-                <button class="btn compact" data-download="${p.id}" type="button">Скачать</button>
+                <button class="btn compact" data-download="${p.id}" type="button">Скачать скриншот</button>
                 <button class="btn compact" data-dup="${p.id}" type="button">Копия</button>
                 <button class="btn compact" data-rename="${p.id}" type="button">Переименовать</button>
                 <button class="btn compact danger" data-delete="${p.id}" type="button">Удалить</button>
