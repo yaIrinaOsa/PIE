@@ -6,7 +6,6 @@
   <meta name="color-scheme" content="light dark" />
   <title>PIE — калькулятор проектов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <style>
     :root {
       --bg: var(--tg-theme-bg-color, #f4f5f7);
@@ -877,68 +876,167 @@
         return String(text || 'PIE-расчёт').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'PIE-расчёт';
       }
 
-      function screenshotMarkup(data) {
-        const c = savedProjectCalc(data);
-        if (!c.valid) return null;
-        const checkLabel = c.custom > 0 ? 'Свой чек' : (data.basis === 'exact' ? 'Расчётный чек' : 'Рекомендуемый чек');
-        const rows = c.items.length ? c.items.map((i) => `
-          <div class="capture-row">
-            <span>${esc(i.name)}${i.type === 'pct' ? ` <span class="capture-pct">${i.value}%</span>` : ''}</span>
-            <strong>${money(i.amount)}</strong>
-          </div>`).join('') : '<div class="capture-row"><span>Нет активных расходов</span><strong>0 ₽</strong></div>';
-        return `<div class="capture-sheet" aria-hidden="true">
-          <h1>${esc(data.client || 'PIE')} — ${esc(data.project || 'Расчёт')}</h1>
-          ${data.comment ? `<p class="capture-comment">${esc(data.comment)}</p>` : ''}
-          <div class="capture-stats">
-            <div class="capture-stat"><span>Целевая маржа</span><strong>${c.target}%</strong></div>
-            <div class="capture-stat"><span>${checkLabel}</span><strong>${money(c.check)}</strong></div>
-            <div class="capture-stat"><span>Маржинальность</span><strong>${c.marginPct.toFixed(1).replace('.', ',')}%</strong></div>
-          </div>
-          <div class="capture-rows">
-            ${rows}
-            <div class="capture-totals">
-              <div class="capture-total"><span>Итого расход</span><strong>${money(c.totalExpense)}</strong></div>
-              <div class="capture-total"><span>Маржа</span><strong>${money(c.margin)}</strong></div>
-              <div class="capture-total"><span>Доля партнёра</span><strong>${money(c.partnerShare)}</strong></div>
-            </div>
-          </div>
-          <div class="capture-foot">PIE · калькулятор проектов</div>
-        </div>`;
+      function wrapCanvasText(ctx, text, maxWidth) {
+        const words = String(text || '').split(/\s+/).filter(Boolean);
+        if (!words.length) return [''];
+        const lines = [];
+        let line = words[0];
+        for (let i = 1; i < words.length; i++) {
+          const test = line + ' ' + words[i];
+          if (ctx.measureText(test).width <= maxWidth) line = test;
+          else { lines.push(line); line = words[i]; }
+        }
+        lines.push(line);
+        return lines;
       }
 
-      async function downloadData(data) {
-        const markup = screenshotMarkup(data);
-        if (!markup) { toast('Исправь проценты'); return; }
-        if (typeof window.html2canvas !== 'function') { toast('Не удалось загрузить модуль скриншота'); return; }
+      function renderScreenshotCanvas(data) {
+        const c = savedProjectCalc(data);
+        if (!c.valid) return null;
 
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = markup;
-        const sheet = wrapper.firstElementChild;
-        document.body.appendChild(sheet);
+        const W = 1200;
+        const pad = 64;
+        const contentW = W - pad * 2;
+        const rowH = 52;
+        const statsH = 118;
+        const headerBase = 170;
+        const totalsH = 190;
+        const footerH = 90;
+        const commentText = String(data.comment || '').trim();
+
+        const measure = document.createElement('canvas').getContext('2d');
+        measure.font = '28px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+        const commentLines = commentText ? wrapCanvasText(measure, commentText, contentW) : [];
+        const commentH = commentLines.length ? commentLines.length * 38 + 26 : 0;
+        const H = headerBase + commentH + statsH + 44 + Math.max(1, c.items.length) * rowH + totalsH + footerH;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        const colors = {
+          bg: '#ffffff',
+          text: '#111318',
+          muted: '#6b7280',
+          line: '#e5e7eb',
+          soft: '#f5f6f8',
+          accent: '#111318'
+        };
+
+        ctx.fillStyle = colors.bg;
+        ctx.fillRect(0, 0, W, H);
+        ctx.textBaseline = 'top';
+
+        let y = 58;
+        ctx.fillStyle = colors.text;
+        ctx.font = '700 44px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+        const title = `${data.client || 'PIE'} — ${data.project || 'Расчёт'}`;
+        const titleLines = wrapCanvasText(ctx, title, contentW);
+        titleLines.slice(0,2).forEach((line, idx) => ctx.fillText(line, pad, y + idx * 54));
+        y += titleLines.length > 1 ? 116 : 68;
+
+        if (commentLines.length) {
+          ctx.font = '28px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          ctx.fillStyle = colors.muted;
+          commentLines.forEach((line, idx) => ctx.fillText(line, pad, y + idx * 38));
+          y += commentLines.length * 38 + 26;
+        }
+
+        const checkLabel = c.custom > 0 ? 'Свой чек' : (data.basis === 'exact' ? 'Расчётный чек' : 'Рекомендуемый чек');
+        const statGap = 18;
+        const statW = (contentW - statGap * 2) / 3;
+        const stats = [
+          ['Целевая маржа', `${c.target}%`],
+          [checkLabel, money(c.check)],
+          ['Маржинальность', `${c.marginPct.toFixed(1).replace('.', ',')}%`]
+        ];
+        stats.forEach((st, i) => {
+          const x = pad + i * (statW + statGap);
+          ctx.fillStyle = colors.soft;
+          ctx.beginPath();
+          ctx.roundRect(x, y, statW, statsH, 18);
+          ctx.fill();
+          ctx.fillStyle = colors.muted;
+          ctx.font = '22px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          ctx.fillText(st[0], x + 24, y + 20);
+          ctx.fillStyle = colors.text;
+          ctx.font = '700 31px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          ctx.fillText(st[1], x + 24, y + 58);
+        });
+        y += statsH + 44;
+
+        ctx.fillStyle = colors.text;
+        ctx.font = '700 25px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+        ctx.fillText('Раскладка', pad, y);
+        y += 42;
+
+        const items = c.items.length ? c.items : [{name:'Нет активных расходов', type:'fixed', amount:0}];
+        items.forEach((item) => {
+          ctx.strokeStyle = colors.line;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(pad, y + rowH - 1);
+          ctx.lineTo(W - pad, y + rowH - 1);
+          ctx.stroke();
+
+          ctx.fillStyle = colors.text;
+          ctx.font = '26px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          const label = item.type === 'pct' ? `${item.name}  ${item.value}%` : item.name;
+          ctx.fillText(label, pad, y + 12);
+
+          const amount = money(item.amount);
+          ctx.font = '600 26px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          const tw = ctx.measureText(amount).width;
+          ctx.fillText(amount, W - pad - tw, y + 12);
+          y += rowH;
+        });
+
+        y += 34;
+        const totals = [
+          ['Итого расход', money(c.totalExpense)],
+          ['Маржа', money(c.margin)],
+          ['Маржинальность', `${c.marginPct.toFixed(1).replace('.', ',')}%`],
+          ['Доля партнёра', money(c.partnerShare)]
+        ];
+        totals.forEach(([label, value], idx) => {
+          ctx.fillStyle = idx === 1 ? colors.text : colors.muted;
+          ctx.font = idx === 1 ? '700 30px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif' : '25px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          ctx.fillText(label, pad, y);
+          ctx.fillStyle = colors.text;
+          ctx.font = idx === 1 ? '700 30px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif' : '600 25px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+          const tw = ctx.measureText(value).width;
+          ctx.fillText(value, W - pad - tw, y);
+          y += 42;
+        });
+
+        ctx.fillStyle = colors.muted;
+        ctx.font = '21px -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif';
+        ctx.fillText('PIE · калькулятор проектов', pad, H - 50);
+        return canvas;
+      }
+
+      function downloadData(data) {
+        const canvas = renderScreenshotCanvas(data);
+        if (!canvas) { toast('Исправь проценты'); return; }
 
         try {
-          const canvas = await window.html2canvas(sheet, {
-            backgroundColor: getComputedStyle(sheet).backgroundColor,
-            scale: Math.min(2, window.devicePixelRatio || 1.5),
-            useCORS: true,
-            logging: false
-          });
-          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png', 1));
-          if (!blob) throw new Error('PNG creation failed');
-          const url = URL.createObjectURL(blob);
+          // Синхронный data URL сохраняет пользовательский жест клика,
+          // что заметно надёжнее работает внутри Telegram WebView.
+          const url = canvas.toDataURL('image/png', 1);
+          const fileName = safeFileName(`${data.client || 'PIE'} — ${data.project || 'расчёт'}`) + '.png';
           const a = document.createElement('a');
           a.href = url;
-          a.download = safeFileName(`${data.client || 'PIE'} — ${data.project || 'расчёт'}`) + '.png';
+          a.download = fileName;
+          a.rel = 'noopener';
           document.body.appendChild(a);
           a.click();
           a.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 1500);
-          toast('Скриншот скачан');
+          toast('PNG готов');
         } catch (err) {
           console.error(err);
-          toast('Не удалось сохранить скриншот');
-        } finally {
-          sheet.remove();
+          toast('Не удалось сохранить PNG');
         }
       }
 
